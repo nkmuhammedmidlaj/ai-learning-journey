@@ -15,15 +15,24 @@ collection = chroma.get_or_create_collection(
     name="pdfs"
 )
 
-st.title("📚 Upload & Chat PDF")
+st.title("📚 PDF RAG Chatbot")
 
-# Upload PDF
+# Chat History
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display Previous Messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+
+# PDF Upload
 uploaded_file = st.file_uploader(
     "Upload a PDF",
     type=["pdf"]
 )
 
-if uploaded_file:
+if uploaded_file is not None:
 
     reader = PdfReader(uploaded_file)
 
@@ -35,16 +44,12 @@ if uploaded_file:
         if page_text:
             text += page_text + "\n"
 
-    st.success("PDF loaded successfully!")
-
-    # Chunking
     chunks = []
     chunk_size = 800
 
     for i in range(0, len(text), chunk_size):
         chunks.append(text[i:i + chunk_size])
 
-    # Store in ChromaDB
     for i, chunk in enumerate(chunks):
 
         try:
@@ -59,15 +64,29 @@ if uploaded_file:
         except:
             pass
 
-    st.success(f"Stored {len(chunks)} chunks!")
+    st.success(
+        f"{uploaded_file.name} uploaded successfully!"
+    )
 
-# Ask Question
-question = st.text_input(
-    "Ask a question about uploaded PDFs"
+# Chat Input
+question = st.chat_input(
+    "Ask a question about your PDFs"
 )
 
 if question:
 
+    # User Message
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": question
+        }
+    )
+
+    with st.chat_message("user"):
+        st.write(question)
+
+    # Search ChromaDB
     results = collection.query(
         query_texts=[question],
         n_results=10
@@ -77,10 +96,20 @@ if question:
         results["documents"][0]
     )
 
+    # Sources
+    sources = []
+
+    if results["metadatas"]:
+        for meta in results["metadatas"][0]:
+            if meta and "source" in meta:
+                sources.append(meta["source"])
+
+    sources = list(set(sources))
+
     prompt = f"""
 You are a helpful assistant.
 
-Use ONLY the information provided in the context.
+Use ONLY the information in the context.
 
 Context:
 {context}
@@ -88,7 +117,7 @@ Context:
 Question:
 {question}
 
-If the answer is not found in the context,
+If the answer is not available in the context,
 say:
 "I could not find that information in the uploaded documents."
 """
@@ -100,12 +129,29 @@ say:
             contents=prompt
         )
 
-        st.subheader("Answer")
-        st.write(response.text)
-
-        with st.expander("Retrieved Context"):
-            st.write(context)
+        answer = response.text
 
     except Exception as e:
 
-        st.error(f"Gemini Error: {e}")
+        answer = f"Gemini Error: {e}"
+
+    # Save Assistant Message
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": answer
+        }
+    )
+
+    # Display Answer
+    with st.chat_message("assistant"):
+        st.write(answer)
+
+        if sources:
+            st.write("📄 Sources:")
+            for source in sources:
+                st.write(f"- {source}")
+
+    # Debug Context
+    with st.expander("Retrieved Context"):
+        st.write(context)
