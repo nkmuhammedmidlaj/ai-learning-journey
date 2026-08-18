@@ -1,77 +1,96 @@
 import streamlit as st
 import chromadb
+from pypdf import PdfReader
 from google import genai
 
-# Gemini Client
+# Gemini
 client = genai.Client()
 
 # ChromaDB
 chroma = chromadb.PersistentClient(
-    path="C:/ai/multi_pdf_db"
+    path="C:/ai/upload_db"
 )
 
 collection = chroma.get_or_create_collection(
-    name="documents"
+    name="pdfs"
 )
 
-# Title
-st.title("📚 Multi-PDF AI Chatbot")
+st.title("📚 Upload & Chat PDF")
 
-# Chat History
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Upload PDF
+uploaded_file = st.file_uploader(
+    "Upload a PDF",
+    type=["pdf"]
+)
 
-# Display old messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+if uploaded_file:
 
-# User input
-question = st.chat_input("Ask a question")
+    reader = PdfReader(uploaded_file)
+
+    text = ""
+
+    for page in reader.pages:
+        page_text = page.extract_text()
+
+        if page_text:
+            text += page_text + "\n"
+
+    st.success("PDF loaded successfully!")
+
+    # Chunking
+    chunks = []
+    chunk_size = 800
+
+    for i in range(0, len(text), chunk_size):
+        chunks.append(text[i:i + chunk_size])
+
+    # Store in ChromaDB
+    for i, chunk in enumerate(chunks):
+
+        try:
+            collection.add(
+                documents=[chunk],
+                ids=[f"{uploaded_file.name}_{i}"],
+                metadatas=[
+                    {"source": uploaded_file.name}
+                ]
+            )
+
+        except:
+            pass
+
+    st.success(f"Stored {len(chunks)} chunks!")
+
+# Ask Question
+question = st.text_input(
+    "Ask a question about uploaded PDFs"
+)
 
 if question:
 
-    # Show user message
-    st.session_state.messages.append(
-        {"role": "user", "content": question}
-    )
-
-    with st.chat_message("user"):
-        st.write(question)
-
-    # Search ChromaDB
     results = collection.query(
         query_texts=[question],
-        n_results=3
+        n_results=10
     )
 
-    # Retrieved documents
     context = "\n".join(
         results["documents"][0]
     )
 
-    # Get source PDFs
-    sources = []
-
-    for meta in results["metadatas"][0]:
-        if meta and "source" in meta:
-            sources.append(meta["source"])
-
-    sources = list(set(sources))
-
-    # Prompt
     prompt = f"""
+You are a helpful assistant.
+
+Use ONLY the information provided in the context.
+
 Context:
 {context}
 
 Question:
 {question}
 
-Answer using only the context.
-
 If the answer is not found in the context,
 say:
-"I could not find that information in the documents."
+"I could not find that information in the uploaded documents."
 """
 
     try:
@@ -81,26 +100,12 @@ say:
             contents=prompt
         )
 
-        answer = response.text
+        st.subheader("Answer")
+        st.write(response.text)
+
+        with st.expander("Retrieved Context"):
+            st.write(context)
 
     except Exception as e:
 
-        answer = f"Gemini Error: {e}"
-
-    # Save assistant message
-    st.session_state.messages.append(
-        {"role": "assistant", "content": answer}
-    )
-
-    # Display answer
-    with st.chat_message("assistant"):
-        st.write(answer)
-
-        if sources:
-            st.write("📄 Sources:")
-            for source in sources:
-                st.write(f"- {source}")
-
-    # Optional debug section
-    with st.expander("Retrieved Context"):
-        st.write(context)
+        st.error(f"Gemini Error: {e}")
